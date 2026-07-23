@@ -6,7 +6,6 @@ import {
   ClipboardCheck, Stethoscope, FileWarning, Files, ChevronRight, Loader2
 } from "lucide-react";
 import logoColor from "./assets/logo-color.png";
-import logoWhite from "./assets/logo-white.png";
 import { supabase } from "./lib/supabase";
 
 /* ------------------------------------------------------------------ */
@@ -99,16 +98,29 @@ function AuthError({ msg }) {
   );
 }
 
+function AuthInfo({ msg }) {
+  if (!msg) return null;
+  return (
+    <div className="lg-body" style={{ display: "flex", alignItems: "center", gap: 8, background: "#EAF6FD", border: `1px solid ${COL.cyan}55`, color: COL.blue, fontSize: 12.5, padding: "9px 12px", borderRadius: 9, marginBottom: 14 }}>
+      <CheckCircle2 size={14} /> {msg}
+    </div>
+  );
+}
+
 /* ------------------------------ App -------------------------------- */
 
 export default function App() {
-  // loading | login | mfa (verificar TOTP) | enroll (primer login: QR) | app
+  // loading | login | mfa (verificar TOTP) | enroll (primer login: QR)
+  // | recovery (setear contraseña nueva desde el link del email) | app
   const [stage, setStage] = useState("loading");
   const [email, setEmail] = useState("");
   const [pwd, setPwd] = useState("");
+  const [newPwd, setNewPwd] = useState("");
+  const [newPwd2, setNewPwd2] = useState("");
   const [mfa, setMfa] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState(null);
+  const [authInfo, setAuthInfo] = useState(null);
   const [factorId, setFactorId] = useState(null);
   const [enroll, setEnroll] = useState(null); // { id, qr, secret }
   const [userId, setUserId] = useState(null);
@@ -140,15 +152,24 @@ export default function App() {
   /* ------------------------- Sesión y MFA -------------------------- */
 
   useEffect(() => {
+    // El link de recuperación llega como #access_token=...&type=recovery
+    const isRecovery = window.location.hash.includes("type=recovery");
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) resolveMfaState();
-      else setStage("login");
+      if (session) {
+        if (isRecovery) setStage("recovery");
+        else resolveMfaState();
+      } else {
+        if (isRecovery) setAuthError("El enlace de recuperación no es válido o ya venció. Pedí uno nuevo.");
+        setStage("login");
+      }
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") setStage("recovery");
       if (event === "SIGNED_OUT") {
         setStage("login"); setUserId(null); setUserEmail(null); setMe(null);
         setDocs([]); setRegistro([]); setConsents([]); setEmpleados([]);
         setPwd(""); setMfa(""); setFactorId(null); setEnroll(null);
+        setNewPwd(""); setNewPwd2("");
       }
     });
     return () => subscription.unsubscribe();
@@ -183,10 +204,40 @@ export default function App() {
     setStage("enroll");
   };
 
+  const handleForgot = async () => {
+    if (authBusy) return;
+    setAuthError(null); setAuthInfo(null);
+    if (!email.trim()) { setAuthError("Ingresá tu correo y volvé a tocar el enlace."); return; }
+    setAuthBusy(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin,
+    });
+    setAuthBusy(false);
+    if (error) setAuthError(error.message);
+    else setAuthInfo("Te enviamos un correo con el enlace para restablecer tu contraseña.");
+  };
+
+  const handleSetPassword = async (e) => {
+    e.preventDefault();
+    if (authBusy) return;
+    setAuthError(null);
+    if (newPwd.length < 8) { setAuthError("La contraseña debe tener al menos 8 caracteres."); return; }
+    if (newPwd !== newPwd2) { setAuthError("Las contraseñas no coinciden."); return; }
+    setAuthBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: newPwd });
+    if (error) setAuthError(error.message);
+    else {
+      setNewPwd(""); setNewPwd2("");
+      // Contraseña actualizada: seguir el flujo normal (MFA / enroll / app).
+      await resolveMfaState();
+    }
+    setAuthBusy(false);
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     if (authBusy) return;
-    setAuthBusy(true); setAuthError(null);
+    setAuthBusy(true); setAuthError(null); setAuthInfo(null);
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pwd });
     if (error) {
       setAuthError(error.message === "Invalid login credentials" ? "Correo o contraseña incorrectos" : error.message);
@@ -238,7 +289,7 @@ export default function App() {
       const [emps, allDocs, reg, cons] = await Promise.all([
         supabase.from("empleados").select("*").order("nombre"),
         supabase.from("documentos").select("*, tipos_documento(*), empleados(*)").order("cargado_en", { ascending: false }),
-        supabase.from("registro_acceso").select("*, documentos(*), empleados(*)").order("ocurrido_en", { ascending: false }),
+        supabase.from("registro_acceso").select("*, documentos(*, tipos_documento(*)), empleados(*)").order("ocurrido_en", { ascending: false }),
         supabase.from("consentimientos").select("*").order("ocurrido_en", { ascending: false }),
       ]);
       setEmpleados(emps.data ?? []);
@@ -334,7 +385,7 @@ export default function App() {
         <div className="lg-body" style={{ display: "grid", gridTemplateColumns: "1.05fr 1fr", minHeight: 560, borderRadius: 20, overflow: "hidden", border: `1px solid ${COL.border}`, background: COL.surface }}>
           {/* Panel marca */}
           <div style={{ background: `linear-gradient(155deg, ${COL.ink} 0%, ${COL.blue} 100%)`, padding: "44px 40px", color: "#fff", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-            <img src={logoWhite} alt="WellKnows" style={{ height: 38, display: "block" }} />
+            <div className="lg-display" style={{ fontSize: 24, fontWeight: 700, letterSpacing: 0.3 }}>WellKnows</div>
             <div>
               <div className="lg-mono" style={{ fontSize: 11, letterSpacing: 1.5, color: COL.cyan, marginBottom: 14 }}>LEGAJO DIGITAL</div>
               <h1 className="lg-display" style={{ fontSize: 33, lineHeight: 1.12, fontWeight: 700, margin: 0 }}>Cada acceso<br />queda registrado.</h1>
@@ -359,11 +410,31 @@ export default function App() {
                 <h2 className="lg-display" style={{ fontSize: 22, fontWeight: 600, color: COL.ink, margin: "0 0 4px" }}>Ingresá a tu legajo</h2>
                 <p style={{ color: COL.muted, fontSize: 13, margin: "0 0 26px" }}>Acceso seguro con doble factor.</p>
                 <AuthError msg={authError} />
+                <AuthInfo msg={authInfo} />
                 <Field label="Correo" value={email} onChange={setEmail} type="email" placeholder="nombre@wellknows.com" mono />
                 <Field label="Contraseña" value={pwd} onChange={setPwd} type="password" placeholder="••••••••" />
                 <div style={{ marginTop: 22 }}>
                   <Btn kind="dark" type="submit" icon={authBusy ? Loader2 : ChevronRight} disabled={authBusy || !email.trim() || !pwd}>
                     {authBusy ? "Verificando…" : "Continuar"}
+                  </Btn>
+                </div>
+                <button type="button" onClick={handleForgot} className="lg-body"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: COL.blue, fontSize: 12.5, padding: 0, marginTop: 16, textAlign: "left", textDecoration: "underline" }}>
+                  ¿Olvidaste tu contraseña?
+                </button>
+              </form>
+            )}
+            {stage === "recovery" && (
+              <form onSubmit={handleSetPassword}>
+                <div style={{ width: 40, height: 40, borderRadius: 11, background: "#EAF6FD", display: "grid", placeItems: "center", marginBottom: 16 }}><KeyRound size={20} color={COL.blue} /></div>
+                <h2 className="lg-display" style={{ fontSize: 22, fontWeight: 600, color: COL.ink, margin: "0 0 4px" }}>Nueva contraseña</h2>
+                <p style={{ color: COL.muted, fontSize: 13, margin: "0 0 26px" }}>Elegí una contraseña nueva para tu cuenta.</p>
+                <AuthError msg={authError} />
+                <Field label="Contraseña nueva" value={newPwd} onChange={setNewPwd} type="password" placeholder="mínimo 8 caracteres" />
+                <Field label="Repetir contraseña" value={newPwd2} onChange={setNewPwd2} type="password" placeholder="••••••••" />
+                <div style={{ marginTop: 22 }}>
+                  <Btn kind="dark" type="submit" icon={authBusy ? Loader2 : Shield} disabled={authBusy || !newPwd || !newPwd2}>
+                    {authBusy ? "Guardando…" : "Guardar y continuar"}
                   </Btn>
                 </div>
               </form>
@@ -420,7 +491,7 @@ export default function App() {
         {/* Sidebar */}
         <aside style={{ width: 232, background: COL.ink, color: "#fff", padding: "22px 16px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ padding: "0 6px 22px" }}>
-            <img src={logoWhite} alt="WellKnows" style={{ height: 30, display: "block" }} />
+            <div className="lg-display" style={{ fontSize: 19, fontWeight: 700, letterSpacing: 0.3 }}>WellKnows</div>
             <div className="lg-mono" style={{ fontSize: 9, letterSpacing: 1, color: COL.cyan, marginTop: 7 }}>LEGAJO DIGITAL</div>
           </div>
 
